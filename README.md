@@ -206,7 +206,11 @@ Agent reports require `--run-id <assigned-run>` or `CADENCE_RUN_ID`; new assignm
 
 ```sh
 ./scripts/build-local.sh
-cargo test
+cargo fmt -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --locked
+for script in scripts/*.sh; do sh -n "$script"; done
+git diff --check
 ```
 
 Releases publish checksummed macOS and Linux binaries for arm64 and x86-64.

@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -64,9 +64,9 @@ impl StateStore {
                 ..Store::default()
             });
         }
-        let store: Store = serde_json::from_reader(
+        let store: Store = serde_json::from_reader(BufReader::new(
             File::open(&path).with_context(|| format!("cannot open {}", path.display()))?,
-        )
+        ))
         .with_context(|| format!("invalid state at {}", path.display()))?;
         anyhow::ensure!(store.schema_version == 1, "unsupported state schema");
         Ok(store)
@@ -75,10 +75,11 @@ impl StateStore {
     fn save_unlocked(&self, store: &Store) -> Result<()> {
         let path = self.dir.join("state.json");
         let temp = self.dir.join(format!("state.{}.tmp", std::process::id()));
-        let mut file = File::create(&temp)?;
-        serde_json::to_writer_pretty(&mut file, store)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
+        let mut writer = BufWriter::new(File::create(&temp)?);
+        serde_json::to_writer_pretty(&mut writer, store)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
         fs::rename(&temp, &path)?;
         sync_directory(&self.dir)?;
         Ok(())
@@ -120,6 +121,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(state.read().unwrap().schema_version, 1);
-        assert!(!temp.path().join("state.0.tmp").exists());
+        assert!(
+            !temp
+                .path()
+                .join(format!("state.{}.tmp", std::process::id()))
+                .exists()
+        );
     }
 }

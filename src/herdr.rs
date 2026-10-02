@@ -351,7 +351,7 @@ fn start_agent_args(
                 format!("model_reasoning_effort=\"{reasoning_effort}\""),
             ]),
             Harness::Opencode => {}
-            Harness::Pi => {}
+            Harness::Pi => args.extend(["--thinking".into(), reasoning_effort.into()]),
         }
     }
     args.extend(agent_args.iter().cloned());
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn passes_pi_model_through_without_effort_flags() {
+    fn passes_pi_model_and_thinking_level_to_pi() {
         let args = start_agent_args(
             "researcher",
             Harness::Pi,
@@ -588,6 +588,8 @@ mod tests {
                 "--",
                 "--model",
                 "zai/glm-5.3-flash",
+                "--thinking",
+                "high",
             ]
         );
     }

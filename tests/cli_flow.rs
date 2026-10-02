@@ -54,8 +54,28 @@ fn repo() -> tempfile::TempDir {
     temp
 }
 
+fn cadence_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"));
+    for variable in [
+        "CADENCE_STATE_DIR",
+        "CADENCE_PROJECT_ROOT",
+        "CADENCE_CONFIG_DIR",
+        "CADENCE_RUN_ID",
+        "HERDR_PLUGIN_STATE_DIR",
+        "HERDR_PLUGIN_CONFIG_DIR",
+        "HERDR_PLUGIN_EVENT",
+        "HERDR_PLUGIN_EVENT_JSON",
+        "HERDR_WORKSPACE_ID",
+        "HERDR_BIN_PATH",
+        "CADENCE_TEST_FAIL_WORKTREE_REMOVE",
+    ] {
+        command.env_remove(variable);
+    }
+    command
+}
+
 fn cadence(root: &Path, state: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    cadence_command()
         .args([
             "--state-dir",
             state.to_str().unwrap(),
@@ -68,7 +88,7 @@ fn cadence(root: &Path, state: &Path, args: &[&str]) -> Output {
 }
 
 fn cadence_with_config_dir(root: &Path, state: &Path, config_dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    cadence_command()
         .args([
             "--state-dir",
             state.to_str().unwrap(),
@@ -130,7 +150,7 @@ fn cancel_agent_json(
     if force {
         args.push("--force");
     }
-    Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    cadence_command()
         .args([
             "--state-dir",
             state.to_str().unwrap(),
@@ -369,7 +389,7 @@ fn run_start_prune_fixture(live_lead: bool) {
     let repo = repo();
     let state = tempfile::tempdir().unwrap();
     let (fake_dir, key, original_store) = start_prune_fixture(repo.path(), state.path(), live_lead);
-    let result = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let result = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -679,7 +699,7 @@ fn reads_the_global_config_dir_from_the_herdr_plugin_env() {
     .unwrap();
 
     // No --config-dir flag: the directory comes from Herdr's plugin env var.
-    let validation = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let validation = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -742,6 +762,58 @@ fn project_config_overrides_the_global_config() {
         value["config"],
         repo.path().join(".cadence.toml").to_str().unwrap()
     );
+}
+
+#[test]
+fn explicit_cli_routing_options_override_inherited_cadence_environment() {
+    let inherited_root = repo();
+    let repo = repo();
+    let state = tempfile::tempdir().unwrap();
+    let inherited_state = tempfile::tempdir().unwrap();
+    let config_dir = tempfile::tempdir().unwrap();
+    let inherited_config_dir = tempfile::tempdir().unwrap();
+    fs::write(
+        config_dir.path().join("cadence.toml"),
+        herdr_cadence::config::DEFAULT_CONFIG_TOML,
+    )
+    .unwrap();
+    fs::write(
+        inherited_config_dir.path().join("cadence.toml"),
+        "this is not valid toml",
+    )
+    .unwrap();
+
+    let validation = cadence_command()
+        .args([
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--project-root",
+            repo.path().to_str().unwrap(),
+            "--config-dir",
+            config_dir.path().to_str().unwrap(),
+            "action",
+            "validate-config",
+        ])
+        .env("CADENCE_STATE_DIR", inherited_state.path())
+        .env("CADENCE_PROJECT_ROOT", inherited_root.path())
+        .env("CADENCE_CONFIG_DIR", inherited_config_dir.path())
+        .env("CADENCE_RUN_ID", "stale-inherited-run")
+        .output()
+        .unwrap();
+
+    assert!(
+        validation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&validation.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&validation.stdout).unwrap();
+    assert_eq!(value["valid"], true);
+    assert_eq!(
+        value["config"],
+        config_dir.path().join("cadence.toml").to_str().unwrap()
+    );
+    assert!(!repo.path().join(".cadence.toml").exists());
+    assert!(!inherited_root.path().join(".cadence.toml").exists());
 }
 
 #[test]
@@ -868,7 +940,7 @@ fn codex_compact_hook_emits_session_start_context_json() {
     let repo = repo();
     let state = tempfile::tempdir().unwrap();
     write_agent_cancel_fixture(repo.path(), state.path(), Default::default());
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let output = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1091,7 +1163,7 @@ exit 0
         .collect(),
     );
 
-    let cancellation = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let cancellation = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1119,7 +1191,7 @@ exit 0
         "cancellation must hold the state lock during the Herdr call"
     );
 
-    let integration = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let integration = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1225,7 +1297,7 @@ exec '{}' "$@"
         .collect(),
     );
 
-    let integration = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let integration = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1330,7 +1402,7 @@ fn agent_idle_notification_is_advisory_and_keeps_working_lifecycle() {
         .collect(),
     );
 
-    let event = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let event = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1390,7 +1462,7 @@ fn keeps_claude_lead_instructions_as_a_post_launch_prompt() {
 }
 
 #[test]
-fn starts_a_pi_lead_without_effort_flags() {
+fn starts_a_pi_lead_with_thinking_flag() {
     run_agent_flow_with_lead(
         false,
         false,
@@ -1688,7 +1760,7 @@ fi
         fs::write(&primary_credit_failure, "1\n").unwrap();
     }
 
-    let start = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let start = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1732,7 +1804,7 @@ fi
         git(repo.path(), &["add", ".cadence.toml"]);
         git(repo.path(), &["commit", "-m", "update Lead config"]);
     }
-    let resumed = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let resumed = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1770,7 +1842,7 @@ fi
 
     let calls_before_relaunch = fs::read_to_string(&log).unwrap();
     fs::remove_file(&lead_started).unwrap();
-    let restarted = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let restarted = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -1805,9 +1877,10 @@ fi
                 "--kind opencode --pane pane-lead --timeout 120000 -- --model {model}#{}",
                 reasoning_effort.as_str().unwrap()
             ),
-            herdr_cadence::config::Harness::Pi => {
-                format!("--kind pi --pane pane-lead --timeout 120000 -- --model {model}")
-            }
+            herdr_cadence::config::Harness::Pi => format!(
+                "--kind pi --pane pane-lead --timeout 120000 -- --model {model} --thinking {}",
+                reasoning_effort.as_str().unwrap()
+            ),
         };
         assert!(relaunch_calls.contains(&expected_launch));
         assert!(!relaunch_calls.contains("openai/lead-model"));
@@ -1870,7 +1943,7 @@ fi
     )
     .unwrap();
     if dirty_at_start {
-        let blocked = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let blocked = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -1901,7 +1974,7 @@ fi
         );
         fs::remove_file(&dirty_path).unwrap();
     }
-    let spawn = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let spawn = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -2014,8 +2087,7 @@ fi
             }
         }
         herdr_cadence::config::Harness::Pi => {
-            let lead_launch =
-                "--kind pi --pane pane-lead --timeout 120000 -- --model openai/lead-model";
+            let lead_launch = "--kind pi --pane pane-lead --timeout 120000 -- --model openai/lead-model --thinking high";
             assert!(calls.contains(lead_launch));
             assert!(calls.contains("agent prompt cadence-lead-"));
             assert!(!calls.contains("developer_instructions="));
@@ -2092,7 +2164,7 @@ fi
             r#"{"title":"Update docs","task":"Update the docs","scope":["docs"],"acceptance":["Docs are current"],"role":"researcher"}"#,
         )
         .unwrap();
-        let follow_up = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let follow_up = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -2158,7 +2230,7 @@ fi
         ),
     )
     .unwrap();
-    let complete = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let complete = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -2208,7 +2280,7 @@ fi
             r#"{"title":"Overlap API","task":"Change the API again","scope":["src/api"],"acceptance":["Tests pass"],"role":"qa"}"#,
         )
         .unwrap();
-        let overlapping_spawn = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let overlapping_spawn = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -2228,7 +2300,7 @@ fi
                 .contains("scope overlaps active agent agent-1")
         );
         if force_tab_cleanup_retry {
-            let deferred = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+            let deferred = cadence_command()
                 .args([
                     "--state-dir",
                     state.path().to_str().unwrap(),
@@ -2249,7 +2321,7 @@ fi
             assert_eq!(deferred["cleanup_deferred"], true);
             fs::write(&tab_close_failure, "1\n").unwrap();
         }
-        let integrate = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let integrate = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -2280,7 +2352,7 @@ fi
             assert_eq!(retained["workspace_id"], "agent-ws");
             assert_eq!(retained["cleanup_attempts"], 1);
 
-            let idle = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+            let idle = cadence_command()
                 .args([
                     "--state-dir",
                     state.path().to_str().unwrap(),
@@ -2327,7 +2399,7 @@ fi
             fs::write(&state_path, serde_json::to_vec_pretty(&limited).unwrap()).unwrap();
             fs::write(&tab_close_failure, "1\n").unwrap();
 
-            let exhausted = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+            let exhausted = cadence_command()
                 .args([
                     "--state-dir",
                     state.path().to_str().unwrap(),
@@ -2360,7 +2432,7 @@ fi
                 serde_json::from_slice(&exhausted_status.stdout).unwrap();
             assert_eq!(exhausted_status["cleanup_attempts"], 2);
 
-            let no_third_attempt = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+            let no_third_attempt = cadence_command()
                 .args([
                     "--state-dir",
                     state.path().to_str().unwrap(),
@@ -2410,7 +2482,7 @@ fi
             r#"{"title":"Update docs","task":"Update the docs","scope":["docs"],"acceptance":["Docs are current"],"role":"researcher"}"#,
         )
         .unwrap();
-        let follow_up = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let follow_up = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -2447,7 +2519,7 @@ fi
         ),
     )
     .unwrap();
-    let research_complete = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let research_complete = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),
@@ -2534,7 +2606,7 @@ fi
         .unwrap()["runs"][&active_run]
         .clone();
     if use_worktree {
-        let blocked_finish = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let blocked_finish = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -2550,7 +2622,7 @@ fi
         assert!(!blocked_finish.status.success());
         assert!(String::from_utf8_lossy(&blocked_finish.stderr).contains("run finish --force"));
     }
-    let mut finish_command = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"));
+    let mut finish_command = cadence_command();
     finish_command.args([
         "--state-dir",
         state.path().to_str().unwrap(),
@@ -2606,7 +2678,7 @@ fi
             .insert("legacy-completed-run".into(), legacy_run);
         fs::write(&state_path, serde_json::to_vec_pretty(&store).unwrap()).unwrap();
 
-        let restart = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+        let restart = cadence_command()
             .args([
                 "--state-dir",
                 state.path().to_str().unwrap(),
@@ -2640,7 +2712,7 @@ fi
 fn ignores_events_from_unrelated_non_git_workspaces() {
     let workspace = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr-cadence"))
+    let output = cadence_command()
         .args([
             "--state-dir",
             state.path().to_str().unwrap(),

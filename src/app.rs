@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{Config, Harness, ResolvedRunner, VersionControlMode};
 use crate::git;
-use crate::herdr::Herdr;
+use crate::herdr::{CreatedTerminal, Herdr};
 use crate::model::{
     Agent, AgentRef, AgentReport, AgentRequest, AgentStatus, ProjectState, ReportStatus, Run,
     RunStatus, path_within_scope, scopes_overlap,
@@ -168,8 +168,16 @@ impl App {
             Ok(run)
         })?;
 
+        // Bind the run selected by the state transaction before contacting
+        // Herdr. A finish/replacement can happen while any of the following
+        // calls are in flight, and later state writes must never follow the
+        // replacement run.
+        self.check_run_id(&key, &run.id)?;
+
         if self.herdr.agent_exists(&run.lead.name)? {
+            self.active_run_snapshot(&key)?;
             self.herdr.focus_agent(&run.lead.name)?;
+            self.active_run_snapshot(&key)?;
             if run.last_error.is_some() {
                 let prompt = prompts::lead(
                     &self.binary,
@@ -180,10 +188,13 @@ impl App {
                     &config,
                     checkout_clean,
                 );
+                self.active_run_snapshot(&key)?;
                 if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
+                    self.active_run_snapshot(&key)?;
                     self.set_run_error(&key, &run.id, &format!("failed to prompt Lead: {error}"))?;
                     return Err(error.context("failed to prompt the Lead"));
                 }
+                self.active_run_snapshot(&key)?;
                 self.state.update(|store| {
                     self.active_run_mut(store, &key)?.last_error = None;
                     Ok(())
@@ -192,6 +203,7 @@ impl App {
             return Ok(json!({"status": "focused", "run_id": run.id, "agent": run.lead.name}));
         }
 
+        self.active_run_snapshot(&key)?;
         let state_dir = self.state.dir().display().to_string();
         let mut env = vec![
             ("CADENCE_BIN", self.binary.display().to_string()),
@@ -208,18 +220,26 @@ impl App {
             .herdr
             .create_lead_tab(workspace_id, &self.root, &env)
             .context("failed to create the Lead tab")?;
-        self.state.update(|store| {
+        if let Err(error) = self.active_run_snapshot(&key) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
+        if let Err(error) = self.state.update(|store| {
             let stored = self.active_run_mut(store, &key)?;
             stored.base_workspace_id = workspace_id.to_string();
             stored.lead.workspace_id = terminal.workspace_id.clone();
             stored.lead.tab_id = Some(terminal.tab_id.clone());
             stored.lead.pane_id = Some(terminal.pane_id.clone());
             Ok(())
-        })?;
+        }) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
         let lead_harness = config.lead.harness;
         let lead_model = config.lead.model.as_deref();
         let lead_reasoning_effort = config.lead.reasoning_effort;
         let agent_args = yolo_agent_args(lead_harness, config.yolo);
+        if let Err(error) = self.active_run_snapshot(&key) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
         let launch = if lead_harness == Harness::Codex {
             self.herdr.start_codex_lead(
                 &run.lead.name,
@@ -240,16 +260,26 @@ impl App {
             )
         };
         if let Err(error) = launch {
-            self.set_run_error(&key, &run.id, &error.to_string())?;
-            return Err(error.context("failed to start the Lead"));
+            return match self.active_run_snapshot(&key) {
+                Ok(_) => match self.set_run_error(&key, &run.id, &error.to_string()) {
+                    Ok(()) => Err(error.context("failed to start the Lead")),
+                    Err(state_error) => self.reject_stale_lead_tab(&key, &terminal, state_error),
+                },
+                Err(stale) => self.reject_stale_lead_tab(&key, &terminal, stale),
+            };
         }
-        self.state.update(|store| {
+        if let Err(error) = self.active_run_snapshot(&key) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
+        if let Err(error) = self.state.update(|store| {
             let stored = self.active_run_mut(store, &key)?;
             stored.lead.harness = lead_harness;
             stored.lead.model = config.lead.model.clone();
             stored.lead.reasoning_effort = lead_reasoning_effort;
             Ok(())
-        })?;
+        }) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
         let prompt = prompts::lead(
             &self.binary,
             self.state.dir(),
@@ -259,14 +289,35 @@ impl App {
             &config,
             checkout_clean,
         );
-        if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
-            self.set_run_error(&key, &run.id, &format!("failed to prompt Lead: {error}"))?;
-            return Err(error.context("failed to prompt the Lead"));
+        if let Err(error) = self.active_run_snapshot(&key) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
         }
-        self.state.update(|store| {
+        if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
+            return match self.active_run_snapshot(&key) {
+                Ok(_) => {
+                    match self.set_run_error(
+                        &key,
+                        &run.id,
+                        &format!("failed to prompt Lead: {error}"),
+                    ) {
+                        Ok(()) => Err(error.context("failed to prompt the Lead")),
+                        Err(state_error) => {
+                            self.reject_stale_lead_tab(&key, &terminal, state_error)
+                        }
+                    }
+                }
+                Err(stale) => self.reject_stale_lead_tab(&key, &terminal, stale),
+            };
+        }
+        if let Err(error) = self.active_run_snapshot(&key) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
+        if let Err(error) = self.state.update(|store| {
             self.active_run_mut(store, &key)?.last_error = None;
             Ok(())
-        })?;
+        }) {
+            return self.reject_stale_lead_tab(&key, &terminal, error);
+        }
         Ok(
             json!({"status": "started", "run_id": run.id, "agent": run.lead.name, "checkout_clean": checkout_clean, "tab_id": terminal.tab_id, "pane_id": terminal.pane_id}),
         )
@@ -1299,6 +1350,58 @@ impl App {
             run_mut(store, key, run_id)?.last_error = Some(message.to_string());
             Ok(())
         })
+    }
+
+    fn reject_stale_lead_tab<T>(
+        &self,
+        key: &str,
+        terminal: &CreatedTerminal,
+        error: anyhow::Error,
+    ) -> Result<T> {
+        if let Err(cleanup_error) = self.cleanup_stale_lead_tab(key, terminal) {
+            return Err(error.context(format!(
+                "stale Lead startup; could not safely clean up tab {}: {cleanup_error:#}",
+                terminal.tab_id
+            )));
+        }
+        Err(error)
+    }
+
+    fn cleanup_stale_lead_tab(&self, key: &str, terminal: &CreatedTerminal) -> Result<()> {
+        // Release the state lock before the Herdr calls below. If the active
+        // replacement already owns either returned resource, leave it alone.
+        let replacement_owns_resource = {
+            let store = self.state.read()?;
+            let run = store.projects.get(key).and_then(|project| {
+                project
+                    .active_run
+                    .as_ref()
+                    .and_then(|run_id| project.runs.get(run_id))
+            });
+            run.is_some_and(|run| {
+                run.lead.tab_id.as_deref() == Some(terminal.tab_id.as_str())
+                    || run.lead.pane_id.as_deref() == Some(terminal.pane_id.as_str())
+            })
+        };
+        if replacement_owns_resource {
+            return Ok(());
+        }
+
+        if let Err(close_error) = self.herdr.close_tab(&terminal.tab_id) {
+            match self.herdr.tab_exists(&terminal.tab_id) {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Err(close_error);
+                }
+                Err(check_error) => {
+                    return Err(close_error).context(format!(
+                        "could not confirm whether stale Lead tab {} still exists: {check_error:#}",
+                        terminal.tab_id
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn notify(&self, key: &str, message: &str) {

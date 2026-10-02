@@ -979,6 +979,408 @@ exit 0
 }
 
 #[test]
+fn delayed_fresh_lead_start_cannot_touch_a_replacement_run() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.edit_agent(|agent| agent["status"] = "cancelled".into());
+    fixture.run(&["run", "finish"]);
+    let calls = root.join("calls");
+    let first_get = root.join("first-get");
+    let release = root.join("release-old");
+    fixture.herdr(&format!(
+        r#"printf '%s\n' "$*" >> '{}'
+case "$1 $2" in
+  "agent get")
+    if [ ! -e '{}' ]; then
+      touch '{}'
+      while [ ! -e '{}' ]; do sleep 0.01; done
+    fi
+    printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
+    exit 1
+    ;;
+  "tab create")
+    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"replacement-tab"}},"root_pane":{{"pane_id":"replacement-pane"}}}}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+esac
+exit 0
+"#,
+        calls.display(),
+        first_get.display(),
+        first_get.display(),
+        release.display(),
+    ));
+    let old_start = fixture
+        .command(&["action", "start"])
+        .env("HERDR_WORKSPACE_ID", "workspace-base")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&first_get);
+
+    let state_path = root.join("state/state.json");
+    let state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let key = project_key(&root.join("repo"));
+    let old_run_id = state["projects"][&key]["active_run"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let old_agent = state["projects"][&key]["runs"][&old_run_id]["lead"]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        success(
+            fixture
+                .command(&["run", "finish"])
+                .env("CADENCE_RUN_ID", &old_run_id)
+                .output()
+                .unwrap(),
+        )["run_id"],
+        old_run_id
+    );
+
+    let replacement = success(
+        fixture
+            .command(&["action", "start"])
+            .env("HERDR_WORKSPACE_ID", "workspace-base")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(replacement["status"], "started");
+    let replacement_run_id = replacement["run_id"].as_str().unwrap();
+    let before_old_release = fs::read(&state_path).unwrap();
+    fs::write(&release, "release\n").unwrap();
+    let old_result = old_start.wait_with_output().unwrap();
+    assert!(!old_result.status.success());
+    assert!(
+        String::from_utf8_lossy(&old_result.stderr).contains("run changed during command"),
+        "{}",
+        String::from_utf8_lossy(&old_result.stderr)
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), before_old_release);
+
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(!calls.contains(&format!("agent start {old_agent}")));
+    assert!(calls.contains(&format!(
+        "agent start {}",
+        replacement["agent"].as_str().unwrap()
+    )));
+    let status = fixture
+        .command(&["run", "status"])
+        .env("CADENCE_RUN_ID", replacement_run_id)
+        .output()
+        .unwrap();
+    let status = success(status);
+    assert_eq!(status["active_run"]["id"], replacement_run_id);
+    assert_eq!(status["active_run"]["lead"]["tab_id"], "replacement-tab");
+    assert_eq!(status["active_run"]["lead"]["pane_id"], "replacement-pane");
+}
+
+#[test]
+fn stale_lead_tab_cleanup_only_closes_unowned_resources() {
+    for collision in [false, true] {
+        let fixture = Fixture::new();
+        let root = fixture.dir.path();
+        fixture.edit_agent(|agent| agent["status"] = "cancelled".into());
+        fixture.run(&["run", "finish"]);
+        let calls = root.join("calls");
+        let tab_create_started = root.join("tab-create-started");
+        let release = root.join("release-old-tab");
+        let replacement_tab = if collision {
+            "stale-tab"
+        } else {
+            "replacement-tab"
+        };
+        let replacement_pane = if collision {
+            "stale-pane"
+        } else {
+            "replacement-pane"
+        };
+        fixture.herdr(&format!(
+            r#"printf '%s\n' "$*" >> '{}'
+case "$1 $2" in
+  "agent get")
+    printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
+    exit 1
+    ;;
+  "tab create")
+    if [ ! -e '{}' ]; then
+      touch '{}'
+      while [ ! -e '{}' ]; do sleep 0.01; done
+      printf '%s\n' '{{"result":{{"tab":{{"tab_id":"stale-tab"}},"root_pane":{{"pane_id":"stale-pane"}}}}}}'
+    else
+      printf '%s\n' '{{"result":{{"tab":{{"tab_id":"{}"}},"root_pane":{{"pane_id":"{}"}}}}}}'
+    fi
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+esac
+exit 0
+"#,
+            calls.display(),
+            tab_create_started.display(),
+            tab_create_started.display(),
+            release.display(),
+            replacement_tab,
+            replacement_pane,
+        ));
+        let old_start = fixture
+            .command(&["action", "start"])
+            .env("HERDR_WORKSPACE_ID", "workspace-base")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        wait_for_file(&tab_create_started);
+
+        let state_path = root.join("state/state.json");
+        let state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        let key = project_key(&root.join("repo"));
+        let old_run_id = state["projects"][&key]["active_run"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        success(
+            fixture
+                .command(&["run", "finish"])
+                .env("CADENCE_RUN_ID", &old_run_id)
+                .output()
+                .unwrap(),
+        );
+        let replacement = success(
+            fixture
+                .command(&["action", "start"])
+                .env("HERDR_WORKSPACE_ID", "workspace-base")
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(replacement["status"], "started");
+        let before_old_release = fs::read(&state_path).unwrap();
+        fs::write(&release, "release\n").unwrap();
+        let old_result = old_start.wait_with_output().unwrap();
+        assert!(!old_result.status.success());
+        assert!(
+            String::from_utf8_lossy(&old_result.stderr).contains("run changed during command"),
+            "{}",
+            String::from_utf8_lossy(&old_result.stderr)
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), before_old_release);
+
+        let calls = fs::read_to_string(calls).unwrap();
+        let closed_stale_tab = calls
+            .lines()
+            .filter(|line| *line == "tab close stale-tab")
+            .count();
+        assert_eq!(closed_stale_tab, usize::from(!collision));
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|line| line.starts_with("tab close "))
+                .count(),
+            usize::from(!collision)
+        );
+        if !collision {
+            assert!(calls.contains("tab close stale-tab"));
+        }
+        let replacement_status = fixture
+            .command(&["run", "status"])
+            .env("CADENCE_RUN_ID", replacement["run_id"].as_str().unwrap())
+            .output()
+            .unwrap();
+        let replacement_status = success(replacement_status);
+        assert_eq!(
+            replacement_status["active_run"]["lead"]["tab_id"],
+            replacement_tab
+        );
+        assert_eq!(
+            replacement_status["active_run"]["lead"]["pane_id"],
+            replacement_pane
+        );
+    }
+}
+
+#[test]
+fn delayed_lead_prompt_retry_cannot_touch_a_replacement_run() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.edit_agent(|agent| agent["status"] = "cancelled".into());
+    fixture.edit_run(|run| run["last_error"] = "retry Lead prompt".into());
+    let calls = root.join("calls");
+    let first_get = root.join("first-get");
+    let release = root.join("release-old");
+    fixture.herdr(&format!(
+        r#"printf '%s\n' "$*" >> '{}'
+case "$1 $2" in
+  "agent get")
+    if [ ! -e '{}' ]; then
+      touch '{}'
+      while [ ! -e '{}' ]; do sleep 0.01; done
+      exit 0
+    fi
+    printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
+    exit 1
+    ;;
+  "tab create")
+    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"replacement-tab"}},"root_pane":{{"pane_id":"replacement-pane"}}}}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+esac
+exit 0
+"#,
+        calls.display(),
+        first_get.display(),
+        first_get.display(),
+        release.display(),
+    ));
+    let old_start = fixture
+        .command(&["action", "start"])
+        .env("HERDR_WORKSPACE_ID", "workspace-base")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&first_get);
+
+    let state_path = root.join("state/state.json");
+    let before = fs::read(&state_path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&before).unwrap()["projects"]
+            [project_key(&root.join("repo"))]["active_run"],
+        "run-test"
+    );
+    assert_eq!(
+        success(fixture.command(&["run", "finish"]).output().unwrap(),)["run_id"],
+        "run-test"
+    );
+
+    let replacement = success(
+        fixture
+            .command(&["action", "start"])
+            .env("HERDR_WORKSPACE_ID", "workspace-base")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(replacement["status"], "started");
+    let before_old_release = fs::read(&state_path).unwrap();
+    fs::write(&release, "release\n").unwrap();
+    let old_result = old_start.wait_with_output().unwrap();
+    assert!(!old_result.status.success());
+    assert!(
+        String::from_utf8_lossy(&old_result.stderr).contains("run changed during command"),
+        "{}",
+        String::from_utf8_lossy(&old_result.stderr)
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), before_old_release);
+
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(!calls.contains("agent focus cadence-lead\n"));
+    assert!(!calls.contains("agent prompt cadence-lead "));
+    assert!(calls.contains(&format!(
+        "agent start {}",
+        replacement["agent"].as_str().unwrap()
+    )));
+}
+
+#[test]
+fn delayed_lead_prompt_retry_does_not_clear_replacement_error() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.edit_agent(|agent| agent["status"] = "cancelled".into());
+    fixture.edit_run(|run| run["last_error"] = "retry old Lead".into());
+    let calls = root.join("calls");
+    let old_prompt_started = root.join("old-prompt-started");
+    let release = root.join("release-old-prompt");
+    fixture.herdr(&format!(
+        r#"printf '%s\n' "$*" >> '{}'
+case "$1 $2" in
+  "agent get")
+    if [ "$3" = "cadence-lead" ]; then exit 0; fi
+    printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
+    exit 1
+    ;;
+  "tab create")
+    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"replacement-tab"}},"root_pane":{{"pane_id":"replacement-pane"}}}}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+  "agent prompt")
+    if [ "$3" = "cadence-lead" ]; then
+      touch '{}'
+      while [ ! -e '{}' ]; do sleep 0.01; done
+      exit 0
+    fi
+    printf 'replacement prompt sentinel\n' >&2
+    exit 1
+    ;;
+esac
+exit 0
+"#,
+        calls.display(),
+        old_prompt_started.display(),
+        release.display(),
+    ));
+    let old_start = fixture
+        .command(&["action", "start"])
+        .env("HERDR_WORKSPACE_ID", "workspace-base")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&old_prompt_started);
+
+    let state_path = root.join("state/state.json");
+    success(fixture.command(&["run", "finish"]).output().unwrap());
+    let replacement = fixture
+        .command(&["action", "start"])
+        .env("HERDR_WORKSPACE_ID", "workspace-base")
+        .output()
+        .unwrap();
+    assert!(!replacement.status.success());
+    assert!(String::from_utf8_lossy(&replacement.stderr).contains("replacement prompt sentinel"));
+    let before_old_release = fs::read(&state_path).unwrap();
+    fs::write(&release, "release\n").unwrap();
+    let old_result = old_start.wait_with_output().unwrap();
+    assert!(!old_result.status.success());
+    assert!(
+        String::from_utf8_lossy(&old_result.stderr).contains("run changed during command"),
+        "{}",
+        String::from_utf8_lossy(&old_result.stderr)
+    );
+    assert_eq!(fs::read(&state_path).unwrap(), before_old_release);
+
+    let replacement_run_id =
+        serde_json::from_slice::<Value>(&before_old_release).unwrap()["projects"]
+            [project_key(&root.join("repo"))]["active_run"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let replacement_status = success(
+        fixture
+            .command(&["run", "status"])
+            .env("CADENCE_RUN_ID", &replacement_run_id)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(replacement_status["active_run"]["id"], replacement_run_id);
+    assert!(
+        replacement_status["active_run"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("replacement prompt sentinel")
+    );
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(calls.contains("agent prompt cadence-lead "));
+}
+
+#[test]
 fn lead_prompt_failure_is_recorded_and_retried_by_start() {
     let fixture = Fixture::new();
     let root = fixture.dir.path();

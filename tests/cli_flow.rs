@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -65,12 +66,14 @@ fn cadence_command() -> Command {
         "HERDR_PLUGIN_CONFIG_DIR",
         "HERDR_PLUGIN_EVENT",
         "HERDR_PLUGIN_EVENT_JSON",
+        "HERDR_PLUGIN_CONTEXT_JSON",
         "HERDR_WORKSPACE_ID",
         "HERDR_BIN_PATH",
         "CADENCE_TEST_FAIL_WORKTREE_REMOVE",
     ] {
         command.env_remove(variable);
     }
+    command.env("HERDR_BIN_PATH", "/dev/null");
     command
 }
 
@@ -564,6 +567,56 @@ fn reports_config_parse_error_causes() {
             .unwrap()
             .contains("unknown variant `invalid`")
     }));
+}
+
+#[test]
+fn status_fixture_does_not_invoke_ambient_herdr_from_path() {
+    let repo = repo();
+    let state = tempfile::tempdir().unwrap();
+    assert!(
+        cadence(repo.path(), state.path(), &["action", "init"])
+            .status
+            .success()
+    );
+
+    let fake_dir = tempfile::tempdir().unwrap();
+    let fake_herdr = fake_dir.path().join("herdr");
+    let invocation_marker = fake_dir.path().join("invoked");
+    fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' invoked > '{}'\n",
+            invocation_marker.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_herdr, permissions).unwrap();
+    let path = format!(
+        "{}:{}",
+        fake_dir.path().display(),
+        env::var("PATH").unwrap_or_default()
+    );
+
+    let status = cadence_command()
+        .args([
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--project-root",
+            repo.path().to_str().unwrap(),
+            "action",
+            "status",
+        ])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert!(!invocation_marker.exists());
 }
 
 #[test]

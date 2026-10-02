@@ -595,6 +595,68 @@ mod tests {
     }
 
     #[test]
+    fn preserves_pi_model_thinking_suffix_without_an_explicit_effort() {
+        let args = start_agent_args(
+            "researcher",
+            Harness::Pi,
+            "pane-1",
+            Some("zai/glm-5.3-flash:high"),
+            ReasoningEffort::Default,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            args,
+            [
+                "agent",
+                "start",
+                "researcher",
+                "--kind",
+                "pi",
+                "--pane",
+                "pane-1",
+                "--timeout",
+                "120000",
+                "--",
+                "--model",
+                "zai/glm-5.3-flash:high",
+            ]
+        );
+    }
+
+    #[test]
+    fn passes_pi_thinking_level_without_a_model() {
+        let args = start_agent_args(
+            "researcher",
+            Harness::Pi,
+            "pane-1",
+            None,
+            ReasoningEffort::Medium,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            args,
+            [
+                "agent",
+                "start",
+                "researcher",
+                "--kind",
+                "pi",
+                "--pane",
+                "pane-1",
+                "--timeout",
+                "120000",
+                "--",
+                "--thinking",
+                "medium",
+            ]
+        );
+    }
+
+    #[test]
     fn generates_a_quoted_compact_hook_and_exact_trust_config() {
         let args = codex_session_hook_args(Path::new("/tmp/Cadence Agent's/bin")).unwrap();
         assert_eq!(args.len(), 4);

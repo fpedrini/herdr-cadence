@@ -80,8 +80,20 @@ impl StateStore {
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(&temp, &path)?;
+        sync_directory(&self.dir)?;
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub fn project_key(root: &Path) -> String {

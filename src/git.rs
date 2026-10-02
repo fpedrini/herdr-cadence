@@ -27,10 +27,7 @@ fn checked(root: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn repository_root(path: &Path) -> Result<PathBuf> {
-    Ok(PathBuf::from(checked(
-        path,
-        &["rev-parse", "--show-toplevel"],
-    )?))
+    checked_path(path, &["rev-parse", "--show-toplevel"])
 }
 
 pub fn current_branch(root: &Path) -> Result<String> {
@@ -88,7 +85,7 @@ pub fn commits_between(root: &Path, base: &str, head: &str) -> Result<Vec<String
 
 pub fn changed_paths(root: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let range = format!("{base}..{head}");
-    let output = git(root, &["diff", "--name-only", "-z", &range])?;
+    let output = git(root, &["diff", "--no-renames", "--name-only", "-z", &range])?;
     if !output.status.success() {
         bail!(
             "git diff failed: {}",
@@ -113,7 +110,7 @@ pub fn changed_paths_for_commit(root: &Path, commit: &str) -> Result<Vec<String>
 pub fn lock_integration(root: &Path) -> Result<File> {
     // The common Git directory also serializes callers using different state
     // directories or different worktrees of this repository.
-    let common = root.join(checked(root, &["rev-parse", "--git-common-dir"])?);
+    let common = root.join(checked_path(root, &["rev-parse", "--git-common-dir"])?);
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -126,7 +123,22 @@ pub fn lock_integration(root: &Path) -> Result<File> {
 }
 
 fn git_path(root: &Path, name: &str) -> Result<PathBuf> {
-    Ok(root.join(checked(root, &["rev-parse", "--git-path", name])?))
+    Ok(root.join(checked_path(root, &["rev-parse", "--git-path", name])?))
+}
+
+fn checked_path(root: &Path, args: &[&str]) -> Result<PathBuf> {
+    let output = git(root, args)?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let output = String::from_utf8_lossy(&output.stdout);
+    let output = output.strip_suffix('\n').unwrap_or(&output);
+    let output = output.strip_suffix('\r').unwrap_or(output);
+    Ok(PathBuf::from(output))
 }
 
 fn ensure_no_git_operation(root: &Path) -> Result<()> {
@@ -323,6 +335,45 @@ mod tests {
         assert!(lock_integration(&checkout).is_err());
         drop(lock);
         assert!(lock_integration(&checkout).is_ok());
+    }
+
+    #[test]
+    fn changed_paths_exposes_both_sides_of_a_rename() {
+        let repo = repository();
+        fs::create_dir(repo.path().join("src")).unwrap();
+        fs::rename(
+            repo.path().join("file.txt"),
+            repo.path().join("src/inside.txt"),
+        )
+        .unwrap();
+        command(repo.path(), &["config", "diff.renames", "true"]);
+        command(repo.path(), &["add", "-A"]);
+        command(repo.path(), &["commit", "-m", "rename"]);
+
+        let base = checked(repo.path(), &["rev-parse", "HEAD^"]).unwrap();
+        let head = head(repo.path()).unwrap();
+        assert_eq!(
+            changed_paths(repo.path(), &base, &head).unwrap(),
+            ["file.txt", "src/inside.txt"]
+        );
+    }
+
+    #[test]
+    fn preserves_trailing_whitespace_in_repository_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project ");
+        fs::create_dir(&root).unwrap();
+        command(&root, &["init", "-b", "main"]);
+        command(&root, &["config", "user.email", "cadence@example.test"]);
+        command(&root, &["config", "user.name", "Cadence Test"]);
+        fs::write(root.join("file.txt"), "base\n").unwrap();
+        command(&root, &["add", "file.txt"]);
+        command(&root, &["commit", "-m", "base"]);
+
+        assert_eq!(repository_root(&root).unwrap(), root);
+        let lock = lock_integration(&root).unwrap();
+        drop(lock);
+        assert!(root.join(".git/cadence-integration.lock").exists());
     }
 
     #[test]

@@ -9,8 +9,19 @@ const CANCELLATION_GUIDANCE: &str = "Idle/done observations must never alone tri
 /// are told to run, empty when no global config directory is in play.
 fn config_flag(config_dir: Option<&Path>) -> String {
     config_dir
-        .map(|dir| format!(" --config-dir {}", dir.display()))
+        .map(|dir| format!(" --config-dir {}", shell_quote_path(dir)))
         .unwrap_or_default()
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"_./:@%+,-".contains(&byte))
+    {
+        return value.into_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 pub fn lead_compact(run_id: &str) -> String {
@@ -81,10 +92,10 @@ Findings: High (Blockers), Mid, Low, or Wish. Verify High/security/data-integrit
 {dirty_guidance}
 Use spawn `display_name` in user updates (not Agent 2/agent-2); reserve IDs for commands or disambiguation. Do not invent dependencies or let agents delegate. Report results and stay available: a completed task does not end the run. Use `run finish` only when the user asks to end the session and no agents are active."#,
         run_id = run.id,
-        bin = binary.display(),
-        state = state_dir.display(),
+        bin = shell_quote_path(binary),
+        state = shell_quote_path(state_dir),
         config = config_flag(config_dir),
-        root = project_root.display(),
+        root = shell_quote_path(project_root),
         roles = roles,
         agent_default = config.agent_default,
         max = max_parallel,
@@ -154,10 +165,10 @@ If completion returns integrated, exit the agent. If it returns completed, remai
         acceptance = acceptance,
         git_guidance = git_guidance,
         permission_guidance = permission_guidance,
-        bin = binary.display(),
-        state = state_dir.display(),
+        bin = shell_quote_path(binary),
+        state = shell_quote_path(state_dir),
         config = config_flag(config_dir),
-        root = project_root.display(),
+        root = shell_quote_path(project_root),
         agent_id = agent.id,
     )
 }
@@ -167,14 +178,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
-    use super::{lead, lead_compact};
+    use super::{lead, lead_compact, shell_quote_path};
     use crate::config::{Config, Harness, ReasoningEffort};
     use crate::model::{AgentRef, Run, RunStatus};
 
-    #[test]
-    fn keeps_the_default_lead_prompt_compact() {
-        let config = Config::default();
-        let run = Run {
+    fn test_run() -> Run {
+        Run {
             id: "run-test".into(),
             status: RunStatus::Active,
             base_branch: "main".into(),
@@ -192,7 +201,13 @@ mod tests {
             next_agent: 1,
             agents: BTreeMap::new(),
             last_error: None,
-        };
+        }
+    }
+
+    #[test]
+    fn keeps_the_default_lead_prompt_compact() {
+        let config = Config::default();
+        let run = test_run();
 
         let prompt = lead(
             Path::new("/cadence"),
@@ -216,6 +231,27 @@ mod tests {
         assert!(prompt.contains("observed_agent_status is advisory"));
         assert!(prompt.contains("must never alone trigger cancellation"));
         assert!(prompt.contains(super::CANCELLATION_GUIDANCE));
+    }
+
+    #[test]
+    fn quotes_shell_paths_in_agent_commands() {
+        let prompt = lead(
+            Path::new("/opt/Cadence Agent/herdr-cadence"),
+            Path::new("/state dir/$HOME"),
+            Some(Path::new("/config;dir")),
+            Path::new("/project && echo unsafe"),
+            &test_run(),
+            &Config::default(),
+            true,
+        );
+
+        assert!(prompt.contains(
+            "'/opt/Cadence Agent/herdr-cadence' --state-dir '/state dir/$HOME' --config-dir '/config;dir' --project-root '/project && echo unsafe'"
+        ));
+        assert_eq!(
+            shell_quote_path(Path::new("/tmp/Cadence Agent's/bin")),
+            "'/tmp/Cadence Agent'\\''s/bin'"
+        );
     }
 
     #[test]

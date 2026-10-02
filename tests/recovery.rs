@@ -973,6 +973,71 @@ exit 0
 }
 
 #[test]
+fn lead_prompt_failure_is_recorded_and_retried_by_start() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.herdr(&format!(
+        r#"case "$1 $2" in
+  "agent get")
+    if [ -e '{}' ]; then exit 0; fi
+    printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
+    exit 1
+    ;;
+  "tab create")
+    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"lead-tab"}},"root_pane":{{"pane_id":"lead-pane"}}}}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+  "agent start")
+    touch '{}'
+    ;;
+  "agent prompt")
+    if [ ! -e '{}' ]; then
+      touch '{}'
+      printf 'lead prompt failed\n' >&2
+      exit 1
+    fi
+    ;;
+esac
+exit 0
+"#,
+        root.join("lead-live").display(),
+        root.join("lead-live").display(),
+        root.join("lead-prompt-attempted").display(),
+        root.join("lead-prompt-attempted").display(),
+    ));
+    let first = fixture
+        .command(&["action", "start"])
+        .env("HERDR_WORKSPACE_ID", "workspace-base")
+        .output()
+        .unwrap();
+    assert!(!first.status.success());
+    assert!(String::from_utf8_lossy(&first.stderr).contains("lead prompt failed"));
+    let status = fixture.run(&["run", "status"]);
+    assert!(
+        status["active_run"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to prompt Lead")
+    );
+
+    let second = fixture
+        .command(&["action", "start"])
+        .env("HERDR_WORKSPACE_ID", "workspace-base")
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let focused: Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(focused["status"], "focused");
+    assert!(fixture.run(&["run", "status"])["active_run"]["last_error"].is_null());
+}
+
+#[test]
 fn reverted_out_of_scope_commits_are_rejected_at_report_and_integration() {
     let fixture = Fixture::new();
     let checkout = fixture.dir.path().join("checkout");

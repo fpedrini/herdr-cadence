@@ -170,6 +170,25 @@ impl App {
 
         if self.herdr.agent_exists(&run.lead.name)? {
             self.herdr.focus_agent(&run.lead.name)?;
+            if run.last_error.is_some() {
+                let prompt = prompts::lead(
+                    &self.binary,
+                    self.state.dir(),
+                    self.global_config_dir(),
+                    &self.root,
+                    &run,
+                    &config,
+                    checkout_clean,
+                );
+                if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
+                    self.set_run_error(&key, &run.id, &format!("failed to prompt Lead: {error}"))?;
+                    return Err(error.context("failed to prompt the Lead"));
+                }
+                self.state.update(|store| {
+                    self.active_run_mut(store, &key)?.last_error = None;
+                    Ok(())
+                })?;
+            }
             return Ok(json!({"status": "focused", "run_id": run.id, "agent": run.lead.name}));
         }
 
@@ -240,7 +259,10 @@ impl App {
             &config,
             checkout_clean,
         );
-        self.herdr.prompt_agent(&run.lead.name, &prompt)?;
+        if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
+            self.set_run_error(&key, &run.id, &format!("failed to prompt Lead: {error}"))?;
+            return Err(error.context("failed to prompt the Lead"));
+        }
         self.state.update(|store| {
             self.active_run_mut(store, &key)?.last_error = None;
             Ok(())

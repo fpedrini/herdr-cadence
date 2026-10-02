@@ -582,6 +582,9 @@ exit 0
     );
     let spawned: Value = serde_json::from_slice(&spawn.stdout).unwrap();
     assert_eq!(spawned["status"], "cancelled");
+    assert_eq!(spawned["agent_id"], "agent-2");
+    assert_eq!(spawned["display_name"], "[Generalist] Cancel during prompt");
+    assert_eq!(spawned["pane_id"], "spawn-pane");
     assert!(root.join("cancel-herdr").exists());
 }
 
@@ -657,6 +660,9 @@ exit 0
     );
     let spawned: Value = serde_json::from_slice(&spawn.stdout).unwrap();
     assert_eq!(spawned["status"], "blocked");
+    assert_eq!(spawned["agent_id"], "agent-2");
+    assert_eq!(spawned["display_name"], "[Generalist] Report during prompt");
+    assert_eq!(spawned["pane_id"], "spawn-pane");
 }
 
 #[test]

@@ -542,21 +542,16 @@ impl App {
             })?;
             return Err(error.context("failed to prompt agent"));
         }
-        let became_working = self.state.update(|store| {
+        let agent = self.state.update(|store| {
             let stored = agent_mut(self.active_run_mut(store, &key)?, &agent.id)?;
             if stored.status == AgentStatus::Starting {
                 stored.status = AgentStatus::Working;
-                Ok(true)
-            } else {
-                Ok(false)
             }
+            Ok(stored.clone())
         })?;
-        if !became_working {
-            return self.agent_status(&agent.id);
-        }
         let display_name = agent_display_name(&agent);
         Ok(
-            json!({"status": "working", "agent_id": agent.id, "display_name": display_name, "role": agent.role, "runner": agent.runner, "harness": agent.harness, "model": agent.model, "reasoning_effort": agent.reasoning_effort, "branch": agent.branch, "workspace_id": terminal.workspace_id, "pane_id": terminal.pane_id}),
+            json!({"status": agent.status, "agent_id": agent.id, "display_name": display_name, "role": agent.role, "runner": agent.runner, "harness": agent.harness, "model": agent.model, "reasoning_effort": agent.reasoning_effort, "branch": agent.branch, "workspace_id": agent.workspace_id, "pane_id": agent.pane_id}),
         )
     }
 

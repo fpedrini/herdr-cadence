@@ -4,12 +4,12 @@ Cadence is a lightweight orchestration plugin for Herdr that provides one **Lead
 
 ## Supported harnesses
 
-| Harness | As Lead | As Agent |
-| --- | --- | --- |
-| Codex | Supported | Supported |
-| Claude | Untested | Supported |
-| OpenCode | Untested | Untested |
-| Pi | Supported | Supported |
+| Harness | Version | As Lead | As Agent |
+| --- | --- | --- | --- |
+| Codex | `codex-cli 0.160.0` | Supported | Supported |
+| Claude | — | Untested | Supported |
+| OpenCode | — | Untested | Untested |
+| Pi | — | Supported | Supported |
 
 For Claude in YOLO mode, run the following command once and accept the confirmation:
 

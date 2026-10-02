@@ -18,18 +18,18 @@ Cadence is a lightweight orchestration plugin for Herdr that provides one **Lead
 - Pi
 
   - Use a model in `provider/id` form (e.g. `zai/glm-5.3`).
-  - Cadence currently ignores `reasoning_effort` for Pi; set the thinking level with a model suffix (e.g. `zai/glm-5.3:high`) when supported.
+  - Cadence passes a non-default `reasoning_effort` through Pi's `--thinking` flag. With `default`, model suffixes such as `zai/glm-5.3:high` pass through unchanged.
   - Cadence's `yolo` setting has no effect on Pi.
 
 ## Install and usage
 
-Requires Herdr 0.7.5+, Git, and the agent harness
+Requires Herdr 0.7.5+, Git, and the chosen agent harness.
 
 ```sh
 herdr plugin install zhenyufu/herdr-cadence
 ```
 
-Init a cadence config inside the target repository's Herdr workspace:
+Initialize Cadence inside the target repository's Herdr workspace:
 
 ```sh
 herdr plugin action invoke herdr-cadence.init
@@ -41,18 +41,20 @@ Edit and commit `.cadence.toml`, then start the conversational Lead:
 herdr plugin action invoke herdr-cadence.start
 ```
 
-View the current status as a notification :
+View the current status as a notification:
 
 ```sh
 herdr plugin action invoke herdr-cadence.status
 ```
 
-Alias for the actions
+Optional aliases for these actions:
+
 ```sh
 alias cadence-init="herdr plugin action invoke herdr-cadence.init"
 alias cadence-start="herdr plugin action invoke herdr-cadence.start"
 alias cadence-status="herdr plugin action invoke herdr-cadence.status"
 ```
+
 Cadence is globally installed but only acts in repositories with an enabled config.
 It never creates or changes `AGENTS.md`; role and task context is injected when each agent starts.
 
@@ -198,7 +200,6 @@ Leads and agents label findings as `High (Blockers)`, `Mid`, `Low`, or `Wish`.
 **Ongoing communication** — after startup, Cadence only sends short one-line status pings to the Lead (roughly 25–55 tokens each) on state transitions: an agent blocked, failed, completed, integrated, hit an integration conflict, went idle without reporting, fell back to another runner, or failed a cleanup retry. Most agents generate only a handful of these over their lifecycle. The Lead's own follow-up prompts to an agent (`agent prompt <id>`) are free text it writes and aren't templated or bounded by Cadence.
 
 Cadence `Agent.status` is the authoritative lifecycle state; `observed_agent_status` is advisory runtime information. An agent's `idle` or `done` observation commonly occurs between turns and never alone justifies cancellation. After inspecting status/report and runtime evidence, the Lead may use `agent cancel <id> --force` for user intent, confirmed exit, nonresponse after follow-up/progress checks, or a verified blocker requiring reassignment (including stale base metadata). Routine recovery within the assigned task needs no additional user permission. Cancellation releases scope while retaining worktrees, reports, and commits; accepted work must still be integrated by the replacement. Cancellable states are `Starting`, `Working`, `Blocked`, `Completed`, and `Conflict`; `Integrating`, `Integrated`, `Failed`, and `Cancelled` cannot be cancelled.
-
 
 Agent reports require `--run-id <assigned-run>` or `CADENCE_RUN_ID`; new assignment prompts include the flag. For agents launched before this change, use their original assignment's run ID when resubmitting a report. Commands reject stale run IDs. New Herdr agent names use a short hash of the full run identity plus the worker number (or `lead`), staying within Herdr's 32-character limit. Branches retain the full run identity; existing stored agent names are unchanged.
 

@@ -613,11 +613,7 @@ mod tests {
     fn parses_the_pi_harness() {
         let raw = toml::to_string_pretty(&Config::default())
             .unwrap()
-            .replacen(
-                "[lead]\nharness = \"codex\"",
-                "[lead]\nharness = \"pi\"",
-                1,
-            );
+            .replacen("[lead]\nharness = \"codex\"", "[lead]\nharness = \"pi\"", 1);
         let parsed: Config = toml::from_str(&raw).unwrap();
         assert_eq!(parsed.lead.harness, Harness::Pi);
         assert_eq!(parsed.lead.harness.as_str(), "pi");

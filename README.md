@@ -1,23 +1,25 @@
 # Cadence
-Cadence is a light Orchestrating plugin for Herdr that provides one **Lead** and a fleet of **agents**. Talk to the Lead, and it will spin up agents with different roles fully integrated with Herdr tabs and git worktrees.
 
-## Supported harness
-| Harness| As Lead | As Agent | 
-| Codex | Supported | Supported | 
-| Claude | Untested | Supported* |
-| Opencode | Untested | Untested | 
-| Pi | Supported | Supported | 
+Cadence is a lightweight orchestration plugin for Herdr that provides one **Lead** and a fleet of **agents**. Talk to the Lead, and it will launch agents with different roles, integrated with Herdr tabs and Git worktrees.
 
-Pi notes: set the model in `provider/id` form (e.g. `zai/glm-5.3`) so pi resolves the
-provider; `reasoning_effort` is ignored — encode thinking level in the model string
-(e.g. `zai/glm-5.3:high`) if your provider supports it; `yolo` has no effect (pi has
-no permission-bypass flag).
+## Supported harnesses
 
-* need to manually run and accept once: 
+| Harness | As Lead | As Agent |
+| --- | --- | --- |
+| Codex | Supported | Supported |
+| Claude | Untested | Supported |
+| OpenCode | Untested | Untested |
+| Pi | Supported | Supported |
+
+For Claude in YOLO mode, run the following command once and accept the confirmation:
+
+```sh
+claude --dangerously-skip-permissions
 ```
-claude  --dangerously-skip-permissions
 
-```
+For Pi, use a model in `provider/id` form (e.g. `zai/glm-5.3`). Cadence currently
+ignores `reasoning_effort` for Pi; set the thinking level with a model suffix
+(e.g. `zai/glm-5.3:high`) when supported. Cadence's `yolo` setting has no effect on Pi.
 
 ## Install and usage
 

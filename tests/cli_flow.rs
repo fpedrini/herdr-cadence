@@ -1805,9 +1805,9 @@ fi
                 "--kind opencode --pane pane-lead --timeout 120000 -- --model {model}#{}",
                 reasoning_effort.as_str().unwrap()
             ),
-            herdr_cadence::config::Harness::Pi => format!(
-                "--kind pi --pane pane-lead --timeout 120000 -- --model {model}"
-            ),
+            herdr_cadence::config::Harness::Pi => {
+                format!("--kind pi --pane pane-lead --timeout 120000 -- --model {model}")
+            }
         };
         assert!(relaunch_calls.contains(&expected_launch));
         assert!(!relaunch_calls.contains("openai/lead-model"));

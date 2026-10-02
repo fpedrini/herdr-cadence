@@ -11,15 +11,15 @@ Cadence is a lightweight orchestration plugin for Herdr that provides one **Lead
 | OpenCode | — | Untested | Untested |
 | Pi | — | Supported | Supported |
 
-For Claude in YOLO mode, run the following command once and accept the confirmation:
+- Claude
 
-```sh
-claude --dangerously-skip-permissions
-```
+  - For YOLO mode, run `claude --dangerously-skip-permissions` once and accept the confirmation.
 
-For Pi, use a model in `provider/id` form (e.g. `zai/glm-5.3`). Cadence currently
-ignores `reasoning_effort` for Pi; set the thinking level with a model suffix
-(e.g. `zai/glm-5.3:high`) when supported. Cadence's `yolo` setting has no effect on Pi.
+- Pi
+
+  - Use a model in `provider/id` form (e.g. `zai/glm-5.3`).
+  - Cadence currently ignores `reasoning_effort` for Pi; set the thinking level with a model suffix (e.g. `zai/glm-5.3:high`) when supported.
+  - Cadence's `yolo` setting has no effect on Pi.
 
 ## Install and usage
 

@@ -16,3 +16,4 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --locked
+      - run: for script in scripts/*.sh; do sh -n "$script"; done

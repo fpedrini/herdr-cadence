@@ -2,6 +2,10 @@
 set -eu
 
 cadence_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' herdr-plugin.toml | head -n 1)
+if [ -z "$cadence_version" ]; then
+  printf 'Unable to determine Cadence version from herdr-plugin.toml\n' >&2
+  exit 1
+fi
 cadence_os=$(uname -s)
 cadence_arch=$(uname -m)
 
@@ -19,7 +23,8 @@ esac
 cadence_asset="herdr-cadence-${cadence_target}.tar.gz"
 cadence_base="https://github.com/zhenyufu/herdr-cadence/releases/download/v${cadence_version}"
 cadence_tmp=$(mktemp -d)
-trap 'rm -rf "$cadence_tmp"' EXIT INT TERM
+cadence_stage=""
+trap 'rm -rf "$cadence_tmp"; if [ -n "$cadence_stage" ]; then rm -rf "$cadence_stage"; fi' EXIT INT TERM
 
 curl --fail --silent --show-error --location \
   "$cadence_base/$cadence_asset" --output "$cadence_tmp/$cadence_asset"
@@ -33,5 +38,8 @@ else
 fi
 
 mkdir -p bin
-tar -xzf "$cadence_tmp/$cadence_asset" -C bin
-chmod 0755 bin/herdr-cadence
+cadence_stage=$(mktemp -d "bin/.herdr-cadence.XXXXXX")
+tar -xzf "$cadence_tmp/$cadence_asset" -C "$cadence_stage"
+test -f "$cadence_stage/herdr-cadence"
+chmod 0755 "$cadence_stage/herdr-cadence"
+mv "$cadence_stage/herdr-cadence" bin/herdr-cadence

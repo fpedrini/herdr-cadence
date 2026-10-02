@@ -252,7 +252,18 @@ pub fn normalize_scope(value: &str) -> anyhow::Result<String> {
             .any(|part| matches!(part, std::path::Component::ParentDir)),
         "scope paths cannot contain .."
     );
-    Ok(value.to_string())
+    let components = path
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::CurDir => None,
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => unreachable!("validated scope component"),
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!components.is_empty(), "scope cannot contain an empty path");
+    Ok(components.join("/"))
 }
 
 pub fn scopes_overlap(left: &[String], right: &[String]) -> bool {
@@ -302,6 +313,8 @@ mod tests {
     #[test]
     fn normalizes_and_rejects_unsafe_scope() {
         assert_eq!(normalize_scope("./src/api/").unwrap(), "src/api");
+        assert_eq!(normalize_scope("src//./api/").unwrap(), "src/api");
+        assert!(normalize_scope(".").is_err());
         assert!(normalize_scope("../secret").is_err());
         assert!(normalize_scope("/tmp/file").is_err());
     }

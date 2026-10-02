@@ -410,7 +410,9 @@ impl App {
                 );
             }
             let number = run.next_agent;
-            run.next_agent += 1;
+            run.next_agent = number
+                .checked_add(1)
+                .context("agent counter exhausted; cannot spawn another agent")?;
             let id = format!("agent-{number}");
             let title_slug = slug(&request.title, 20);
             let title_slug = if title_slug.is_empty() {
@@ -496,11 +498,40 @@ impl App {
             &run.id,
             &agent,
         );
-        self.herdr.prompt_agent(&agent.agent_name, &prompt)?;
         self.state.update(|store| {
-            agent_mut(self.active_run_mut(store, &key)?, &agent.id)?.status = AgentStatus::Working;
+            let stored = agent_mut(self.active_run_mut(store, &key)?, &agent.id)?;
+            ensure!(
+                stored.status == AgentStatus::Starting,
+                "agent {} lifecycle changed during launch to `{}`",
+                agent.id,
+                lifecycle_status_name(&stored.status)
+            );
             Ok(())
         })?;
+        let prompt_error = self.herdr.prompt_agent(&agent.agent_name, &prompt).err();
+        if let Some(error) = prompt_error {
+            self.state.update(|store| {
+                let stored = agent_mut(self.active_run_mut(store, &key)?, &agent.id)?;
+                if stored.status == AgentStatus::Starting {
+                    stored.status = AgentStatus::Failed;
+                    stored.error = Some(error.to_string());
+                }
+                Ok(())
+            })?;
+            return Err(error.context("failed to prompt agent"));
+        }
+        let became_working = self.state.update(|store| {
+            let stored = agent_mut(self.active_run_mut(store, &key)?, &agent.id)?;
+            if stored.status == AgentStatus::Starting {
+                stored.status = AgentStatus::Working;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })?;
+        if !became_working {
+            return self.agent_status(&agent.id);
+        }
         let display_name = agent_display_name(&agent);
         Ok(
             json!({"status": "working", "agent_id": agent.id, "display_name": display_name, "role": agent.role, "runner": agent.runner, "harness": agent.harness, "model": agent.model, "reasoning_effort": agent.reasoning_effort, "branch": agent.branch, "workspace_id": terminal.workspace_id, "pane_id": terminal.pane_id}),
@@ -1179,8 +1210,10 @@ impl App {
     fn fail_agent(&self, key: &str, agent_id: &str, message: &str) -> Result<()> {
         self.state.update(|store| {
             let agent = agent_mut(self.active_run_mut(store, key)?, agent_id)?;
-            agent.status = AgentStatus::Failed;
-            agent.error = Some(message.to_string());
+            if agent.status == AgentStatus::Starting {
+                agent.status = AgentStatus::Failed;
+                agent.error = Some(message.to_string());
+            }
             Ok(())
         })
     }
@@ -1200,6 +1233,12 @@ impl App {
             attempt.reasoning_effort = runner.reasoning_effort;
             self.state.update(|store| {
                 let stored = agent_mut(self.active_run_mut(store, key)?, &attempt.id)?;
+                ensure!(
+                    stored.status == AgentStatus::Starting,
+                    "agent {} lifecycle changed during launch to `{}`",
+                    attempt.id,
+                    lifecycle_status_name(&stored.status)
+                );
                 stored.runner = attempt.runner.clone();
                 stored.harness = attempt.harness;
                 stored.model = attempt.model.clone();

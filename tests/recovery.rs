@@ -381,6 +381,285 @@ fn follow_up_reacquires_scope_and_capacity_before_contacting_agent() {
 }
 
 #[test]
+fn agent_counter_exhaustion_does_not_consume_state() {
+    let fixture = Fixture::new();
+    fixture.edit_run(|run| run["next_agent"] = json!(u32::MAX));
+    let request = fixture.dir.path().join("request.json");
+    fs::write(
+        &request,
+        r#"{"title":"New task","task":"Test counter exhaustion","scope":["new.txt"],"acceptance":["Tests pass"]}"#,
+    )
+    .unwrap();
+    let before = fs::read(fixture.dir.path().join("state/state.json")).unwrap();
+    let output = fixture
+        .command(&[
+            "agent",
+            "spawn",
+            "--request-file",
+            request.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("agent counter exhausted"));
+    assert_eq!(
+        fs::read(fixture.dir.path().join("state/state.json")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn cancellation_during_agent_creation_is_not_overwritten_by_launch_failure() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.herdr(&format!(
+        r#"case "$1 $2" in
+  "tab create")
+    touch '{}'
+    while [ ! -e '{}' ]; do sleep 0.01; done
+    printf 'tab creation failed\n' >&2
+    exit 1
+    ;;
+  "agent get")
+    touch '{}'
+    ;;
+esac
+exit 0
+"#,
+        root.join("create-started").display(),
+        root.join("create-release").display(),
+        root.join("cancel-herdr").display(),
+    ));
+    let request = root.join("request.json");
+    fs::write(
+        &request,
+        r#"{"title":"Cancel during create","task":"Test creation race","scope":["new.txt"],"acceptance":["Tests pass"]}"#,
+    )
+    .unwrap();
+    let spawn = fixture
+        .command(&[
+            "agent",
+            "spawn",
+            "--request-file",
+            request.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&root.join("create-started"));
+    let cancellation = fixture
+        .command(&["agent", "cancel", "agent-2", "--force"])
+        .output()
+        .unwrap();
+    assert!(
+        cancellation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cancellation.stderr)
+    );
+    assert_eq!(
+        fixture.run(&["agent", "status", "agent-2"])["status"],
+        "cancelled"
+    );
+    fs::write(root.join("create-release"), "release\n").unwrap();
+    let spawn = spawn.wait_with_output().unwrap();
+    assert!(!spawn.status.success());
+    assert!(String::from_utf8_lossy(&spawn.stderr).contains("tab creation failed"));
+    assert_eq!(
+        fixture.run(&["agent", "status", "agent-2"])["status"],
+        "cancelled"
+    );
+}
+
+#[test]
+fn prompt_failure_is_persisted_as_a_failed_agent_with_resources_retained() {
+    let fixture = Fixture::new();
+    fixture.herdr(
+        r#"case "$1 $2" in
+  "tab create")
+    printf '%s\n' '{"result":{"tab":{"tab_id":"spawn-tab"},"root_pane":{"pane_id":"spawn-pane"}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{"result":{"process_info":{"shell_pid":1,"foreground_process_group_id":1}}}'
+    ;;
+  "agent prompt")
+    printf 'prompt failed\n' >&2
+    exit 1
+    ;;
+esac
+exit 0
+"#,
+    );
+    let request = fixture.dir.path().join("request.json");
+    fs::write(
+        &request,
+        r#"{"title":"Prompt failure","task":"Test prompt failure","scope":["new.txt"],"acceptance":["Tests pass"]}"#,
+    )
+    .unwrap();
+    let output = fixture
+        .command(&[
+            "agent",
+            "spawn",
+            "--request-file",
+            request.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("prompt failed"));
+    let agent = fixture.run(&["agent", "status", "agent-2"]);
+    assert_eq!(agent["status"], "failed");
+    assert!(agent["error"].as_str().unwrap().contains("prompt failed"));
+    assert_eq!(agent["tab_id"], "spawn-tab");
+    assert_eq!(agent["pane_id"], "spawn-pane");
+}
+
+#[test]
+fn cancellation_during_initial_prompt_wins_over_launch_completion() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.herdr(&format!(
+        r#"case "$1 $2" in
+  "tab create")
+    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"spawn-tab"}},"root_pane":{{"pane_id":"spawn-pane"}}}}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+  "agent prompt")
+    if [ "$3" != "cadence-lead" ]; then
+      touch '{}'
+      while [ ! -e '{}' ]; do sleep 0.01; done
+    fi
+    ;;
+  "agent get")
+    touch '{}'
+    ;;
+esac
+exit 0
+"#,
+        root.join("prompt-started").display(),
+        root.join("prompt-release").display(),
+        root.join("cancel-herdr").display(),
+    ));
+    let request = root.join("request.json");
+    fs::write(
+        &request,
+        r#"{"title":"Cancel during prompt","task":"Test cancellation race","scope":["new.txt"],"acceptance":["Tests pass"]}"#,
+    )
+    .unwrap();
+    let spawn = fixture
+        .command(&[
+            "agent",
+            "spawn",
+            "--request-file",
+            request.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&root.join("prompt-started"));
+    let cancellation = fixture
+        .command(&["agent", "cancel", "agent-2", "--force"])
+        .output()
+        .unwrap();
+    assert!(
+        cancellation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cancellation.stderr)
+    );
+    assert_eq!(
+        fixture.run(&["agent", "status", "agent-2"])["status"],
+        "cancelled"
+    );
+    fs::write(root.join("prompt-release"), "release\n").unwrap();
+    let spawn = spawn.wait_with_output().unwrap();
+    assert!(
+        spawn.status.success(),
+        "{}",
+        String::from_utf8_lossy(&spawn.stderr)
+    );
+    let spawned: Value = serde_json::from_slice(&spawn.stdout).unwrap();
+    assert_eq!(spawned["status"], "cancelled");
+    assert!(root.join("cancel-herdr").exists());
+}
+
+#[test]
+fn report_during_initial_prompt_wins_over_launch_completion() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    fixture.herdr(&format!(
+        r#"case "$1 $2" in
+  "tab create")
+    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"spawn-tab"}},"root_pane":{{"pane_id":"spawn-pane"}}}}}}'
+    ;;
+  "pane process-info")
+    printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
+    ;;
+  "agent prompt")
+    if [ "$3" != "cadence-lead" ]; then
+      touch '{}'
+      while [ ! -e '{}' ]; do sleep 0.01; done
+    fi
+    ;;
+esac
+exit 0
+"#,
+        root.join("prompt-started").display(),
+        root.join("prompt-release").display(),
+    ));
+    let request = root.join("request.json");
+    fs::write(
+        &request,
+        r#"{"title":"Report during prompt","task":"Test report race","scope":["new.txt"],"acceptance":["Tests pass"]}"#,
+    )
+    .unwrap();
+    let report = root.join("report.json");
+    fs::write(&report, r#"{"status":"blocked","summary":"Need review"}"#).unwrap();
+    let spawn = fixture
+        .command(&[
+            "agent",
+            "spawn",
+            "--request-file",
+            request.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&root.join("prompt-started"));
+    let completed = fixture
+        .command(&[
+            "agent",
+            "complete",
+            "agent-2",
+            "--report-file",
+            report.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        completed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&completed.stderr)
+    );
+    assert_eq!(
+        fixture.run(&["agent", "status", "agent-2"])["status"],
+        "blocked"
+    );
+    fs::write(root.join("prompt-release"), "release\n").unwrap();
+    let spawn = spawn.wait_with_output().unwrap();
+    assert!(
+        spawn.status.success(),
+        "{}",
+        String::from_utf8_lossy(&spawn.stderr)
+    );
+    let spawned: Value = serde_json::from_slice(&spawn.stdout).unwrap();
+    assert_eq!(spawned["status"], "blocked");
+}
+
+#[test]
 fn cancellation_wins_over_report_validation_already_in_flight() {
     let fixture = Fixture::new();
     let report_path = fixture.dir.path().join("report.json");

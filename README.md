@@ -14,6 +14,7 @@ Cadence is a lightweight orchestration plugin for Herdr that provides one **Lead
 - Codex
 
   - If prompted to run Cadence outside the project sandbox, choose the option to always allow the suggested command prefix.
+  - After compaction, a Lead-only hook injects a short reminder of the run ID and coordination rules.
 
 - Claude
 

@@ -178,28 +178,6 @@ impl App {
             self.active_run_snapshot(&key)?;
             self.herdr.focus_agent(&run.lead.name)?;
             self.active_run_snapshot(&key)?;
-            if run.last_error.is_some() {
-                let prompt = prompts::lead(
-                    &self.binary,
-                    self.state.dir(),
-                    self.global_config_dir(),
-                    &self.root,
-                    &run,
-                    &config,
-                    checkout_clean,
-                );
-                self.active_run_snapshot(&key)?;
-                if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
-                    self.active_run_snapshot(&key)?;
-                    self.set_run_error(&key, &run.id, &format!("failed to prompt Lead: {error}"))?;
-                    return Err(error.context("failed to prompt the Lead"));
-                }
-                self.active_run_snapshot(&key)?;
-                self.state.update(|store| {
-                    self.active_run_mut(store, &key)?.last_error = None;
-                    Ok(())
-                })?;
-            }
             return Ok(json!({"status": "focused", "run_id": run.id, "agent": run.lead.name}));
         }
 
@@ -294,18 +272,7 @@ impl App {
         }
         if let Err(error) = self.herdr.prompt_agent(&run.lead.name, &prompt) {
             return match self.active_run_snapshot(&key) {
-                Ok(_) => {
-                    match self.set_run_error(
-                        &key,
-                        &run.id,
-                        &format!("failed to prompt Lead: {error}"),
-                    ) {
-                        Ok(()) => Err(error.context("failed to prompt the Lead")),
-                        Err(state_error) => {
-                            self.reject_stale_lead_tab(&key, &terminal, state_error)
-                        }
-                    }
-                }
+                Ok(_) => Err(error.context("failed to prompt the Lead")),
                 Err(stale) => self.reject_stale_lead_tab(&key, &terminal, stale),
             };
         }

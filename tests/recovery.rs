@@ -1205,7 +1205,45 @@ exit 0
 }
 
 #[test]
-fn delayed_lead_prompt_retry_cannot_touch_a_replacement_run() {
+fn existing_lead_with_error_is_only_focused() {
+    let fixture = Fixture::new();
+    let calls = fixture.dir.path().join("calls");
+    fixture.edit_run(|run| run["last_error"] = "previous Lead launch failed".into());
+    fixture.herdr(&format!(
+        r#"printf '%s\n' "$*" >> '{}'
+case "$1 $2" in
+  "agent get")
+    exit 0
+    ;;
+  "agent prompt")
+    printf 'unexpected Lead prompt\n' >&2
+    exit 1
+    ;;
+esac
+exit 0
+"#,
+        calls.display(),
+    ));
+
+    let focused = success(
+        fixture
+            .command(&["action", "start"])
+            .env("HERDR_WORKSPACE_ID", "workspace-base")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(focused["status"], "focused");
+    assert_eq!(
+        fixture.run(&["run", "status"])["active_run"]["last_error"],
+        "previous Lead launch failed"
+    );
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(calls.contains("agent focus cadence-lead"));
+    assert!(!calls.contains("agent prompt cadence-lead"));
+}
+
+#[test]
+fn delayed_existing_lead_focus_cannot_touch_a_replacement_run() {
     let fixture = Fixture::new();
     let root = fixture.dir.path();
     fixture.edit_agent(|agent| agent["status"] = "cancelled".into());
@@ -1289,24 +1327,28 @@ exit 0
 }
 
 #[test]
-fn delayed_lead_prompt_retry_does_not_clear_replacement_error() {
+fn delayed_fresh_lead_prompt_cannot_touch_a_replacement_run() {
     let fixture = Fixture::new();
     let root = fixture.dir.path();
     fixture.edit_agent(|agent| agent["status"] = "cancelled".into());
-    fixture.edit_run(|run| run["last_error"] = "retry old Lead".into());
     let calls = root.join("calls");
+    let old_tab_created = root.join("old-tab-created");
     let old_prompt_started = root.join("old-prompt-started");
     let release = root.join("release-old-prompt");
     fixture.herdr(&format!(
         r#"printf '%s\n' "$*" >> '{}'
 case "$1 $2" in
   "agent get")
-    if [ "$3" = "cadence-lead" ]; then exit 0; fi
     printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
     exit 1
     ;;
   "tab create")
-    printf '%s\n' '{{"result":{{"tab":{{"tab_id":"replacement-tab"}},"root_pane":{{"pane_id":"replacement-pane"}}}}}}'
+    if [ ! -e '{}' ]; then
+      touch '{}'
+      printf '%s\n' '{{"result":{{"tab":{{"tab_id":"old-tab"}},"root_pane":{{"pane_id":"old-pane"}}}}}}'
+    else
+      printf '%s\n' '{{"result":{{"tab":{{"tab_id":"replacement-tab"}},"root_pane":{{"pane_id":"replacement-pane"}}}}}}'
+    fi
     ;;
   "pane process-info")
     printf '%s\n' '{{"result":{{"process_info":{{"shell_pid":1,"foreground_process_group_id":1}}}}}}'
@@ -1324,6 +1366,8 @@ esac
 exit 0
 "#,
         calls.display(),
+        old_tab_created.display(),
+        old_tab_created.display(),
         old_prompt_started.display(),
         release.display(),
     ));
@@ -1346,16 +1390,6 @@ exit 0
     assert!(!replacement.status.success());
     assert!(String::from_utf8_lossy(&replacement.stderr).contains("replacement prompt sentinel"));
     let before_old_release = fs::read(&state_path).unwrap();
-    fs::write(&release, "release\n").unwrap();
-    let old_result = old_start.wait_with_output().unwrap();
-    assert!(!old_result.status.success());
-    assert!(
-        String::from_utf8_lossy(&old_result.stderr).contains("run changed during command"),
-        "{}",
-        String::from_utf8_lossy(&old_result.stderr)
-    );
-    assert_eq!(fs::read(&state_path).unwrap(), before_old_release);
-
     let replacement_run_id =
         serde_json::from_slice::<Value>(&before_old_release).unwrap()["projects"]
             [project_key(&root.join("repo"))]["active_run"]
@@ -1369,23 +1403,28 @@ exit 0
             .output()
             .unwrap(),
     );
-    assert_eq!(replacement_status["active_run"]["id"], replacement_run_id);
+    assert!(replacement_status["active_run"]["last_error"].is_null());
+    fs::write(&release, "release\n").unwrap();
+    let old_result = old_start.wait_with_output().unwrap();
+    assert!(!old_result.status.success());
     assert!(
-        replacement_status["active_run"]["last_error"]
-            .as_str()
-            .unwrap()
-            .contains("replacement prompt sentinel")
+        String::from_utf8_lossy(&old_result.stderr).contains("run changed during command"),
+        "{}",
+        String::from_utf8_lossy(&old_result.stderr)
     );
+    assert_eq!(fs::read(&state_path).unwrap(), before_old_release);
     let calls = fs::read_to_string(calls).unwrap();
     assert!(calls.contains("agent prompt cadence-lead "));
 }
 
 #[test]
-fn lead_prompt_failure_is_recorded_and_retried_by_start() {
+fn lead_prompt_failure_is_not_recorded_or_retried_by_start() {
     let fixture = Fixture::new();
     let root = fixture.dir.path();
+    let calls = root.join("calls");
     fixture.herdr(&format!(
-        r#"case "$1 $2" in
+        r#"printf '%s\n' "$*" >> '{}'
+case "$1 $2" in
   "agent get")
     if [ -e '{}' ]; then exit 0; fi
     printf '%s\n' '{{"error":{{"code":"agent_not_found"}}}}' >&2
@@ -1401,18 +1440,16 @@ fn lead_prompt_failure_is_recorded_and_retried_by_start() {
     touch '{}'
     ;;
   "agent prompt")
-    if [ ! -e '{}' ]; then
-      touch '{}'
-      printf 'lead prompt failed\n' >&2
-      exit 1
-    fi
+    printf '%s\n' attempt >> '{}'
+    printf 'lead prompt failed\n' >&2
+    exit 1
     ;;
 esac
 exit 0
 "#,
+        calls.display(),
         root.join("lead-live").display(),
         root.join("lead-live").display(),
-        root.join("lead-prompt-attempted").display(),
         root.join("lead-prompt-attempted").display(),
     ));
     let first = fixture
@@ -1423,12 +1460,7 @@ exit 0
     assert!(!first.status.success());
     assert!(String::from_utf8_lossy(&first.stderr).contains("lead prompt failed"));
     let status = fixture.run(&["run", "status"]);
-    assert!(
-        status["active_run"]["last_error"]
-            .as_str()
-            .unwrap()
-            .contains("failed to prompt Lead")
-    );
+    assert!(status["active_run"]["last_error"].is_null());
 
     let second = fixture
         .command(&["action", "start"])
@@ -1443,6 +1475,15 @@ exit 0
     let focused: Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(focused["status"], "focused");
     assert!(fixture.run(&["run", "status"])["active_run"]["last_error"].is_null());
+    assert_eq!(
+        fs::read_to_string(root.join("lead-prompt-attempted"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let calls = fs::read_to_string(calls).unwrap();
+    assert!(calls.contains("agent focus cadence-lead"));
 }
 
 #[test]

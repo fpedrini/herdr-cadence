@@ -60,15 +60,10 @@ pub fn lead(
     } else {
         "Clean commits auto-integrate when configured."
     };
-    let lead_access = match (config.lead.harness, global_yolo) {
-        (crate::config::Harness::Omp, false) => {
-            "OMP requests interactive approval for writes and command execution. Request approval when prompted; this is not sandbox containment."
-        }
-        (crate::config::Harness::Omp, true) => {
-            "OMP auto-approves ordinary writes and command execution; explicit deny/prompt policies still apply. Stay within scope; this is not sandbox containment."
-        }
-        (_, true) => "YOLO removes permission prompts, not scope or safety limits.",
-        _ => "",
+    let lead_access = if global_yolo {
+        "YOLO removes permission prompts, not scope or safety limits."
+    } else {
+        ""
     };
     let dirty_guidance = if checkout_clean {
         ""
@@ -137,12 +132,6 @@ pub fn agent(
         "You directly share the project checkout with other agents. You may create a Markdown artifact named for your agent in the project root only when that path is in your allowed scope. Stage only paths in scope, create exactly one commit for changed files, and include its commit_sha in the report."
     };
     let permission_guidance = match (agent.harness, agent.use_worktree, agent.yolo) {
-        (crate::config::Harness::Omp, _, false) => {
-            "OMP requests interactive approval for writes and command execution. Request approval when prompted; this is not sandbox containment."
-        }
-        (crate::config::Harness::Omp, _, true) => {
-            "OMP auto-approves ordinary writes and command execution; explicit deny/prompt policies still apply. Stay within scope; this is not sandbox containment."
-        }
         (crate::config::Harness::Codex, true, false) => {
             "You run autonomously with workspace-write sandboxing and no approval prompts. If an action outside the available sandbox is required, do not ask the user; report the limitation so the Lead can handle it."
         }
@@ -189,7 +178,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
-    use super::{lead, shell_quote_path};
+    use super::{lead, lead_compact, shell_quote_path};
     use crate::config::{Config, Harness, ReasoningEffort};
     use crate::model::{AgentRef, Run, RunStatus};
 
@@ -216,6 +205,35 @@ mod tests {
     }
 
     #[test]
+    fn keeps_the_default_lead_prompt_compact() {
+        let config = Config::default();
+        let run = test_run();
+
+        let prompt = lead(
+            Path::new("/cadence"),
+            Path::new("/state"),
+            Some(Path::new("/config")),
+            Path::new("/project"),
+            &run,
+            &config,
+            true,
+        );
+
+        assert!(
+            prompt.len() < 3_200,
+            "Lead prompt is {} bytes",
+            prompt.len()
+        );
+        // Agents inherit no HERDR_PLUGIN_CONFIG_DIR, so the invocations the
+        // Lead is told to run must carry the directory explicitly.
+        assert!(prompt.contains("--state-dir /state --config-dir /config"));
+        assert!(prompt.contains("Cadence Agent.status is authoritative"));
+        assert!(prompt.contains("observed_agent_status is advisory"));
+        assert!(prompt.contains("must never alone trigger cancellation"));
+        assert!(prompt.contains(super::CANCELLATION_GUIDANCE));
+    }
+
+    #[test]
     fn quotes_shell_paths_in_agent_commands() {
         let prompt = lead(
             Path::new("/opt/Cadence Agent/herdr-cadence"),
@@ -234,5 +252,20 @@ mod tests {
             shell_quote_path(Path::new("/tmp/Cadence Agent's/bin")),
             "'/tmp/Cadence Agent'\\''s/bin'"
         );
+    }
+
+    #[test]
+    fn keeps_the_compaction_reanchor_small_and_operational() {
+        let prompt = lead_compact("run-test");
+        assert!(prompt.len() < 900, "re-anchor is {} bytes", prompt.len());
+        assert!(prompt.contains("Lead for Cadence run run-test"));
+        assert!(prompt.contains("only you talk to the user"));
+        assert!(prompt.contains("agent spawn"));
+        assert!(prompt.contains("agent list/status/report/prompt/cancel/integrate"));
+        assert!(prompt.contains("run finish only when the user asks"));
+        assert!(prompt.contains("Cadence Agent.status is authoritative"));
+        assert!(prompt.contains("observed_agent_status is advisory"));
+        assert!(prompt.contains("must never alone trigger cancellation"));
+        assert!(prompt.contains(super::CANCELLATION_GUIDANCE));
     }
 }
